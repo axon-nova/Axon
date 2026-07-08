@@ -1,17 +1,12 @@
 // api/anthropic.js
 //
 // This function still lives at /api/anthropic, but now calls Google's
-// Gemini API instead of Anthropic's. This version temporarily logs the last
-// raw Gemini response so we can debug why the visible text might be empty —
-// visit /api/anthropic?debug=1 in your browser after chatting once to see it.
+// Gemini API instead of Anthropic's. This debug version shows what went
+// wrong directly in the chat reply if the response text comes back empty.
 
 const RATE_LIMIT_WINDOW_MS = 60 * 1000;
 const RATE_LIMIT_MAX_REQUESTS = 20;
 const requestLog = new Map();
-
-// Debug-only: remembers the last raw Gemini response in memory so we can
-// inspect it. Safe to remove once things are working.
-let lastDebugInfo = null;
 
 function isRateLimited(ip) {
   const now = Date.now();
@@ -30,15 +25,6 @@ function toGeminiContents(messages) {
 }
 
 export default async function handler(req, res) {
-  if (req.method === "GET") {
-    if (req.query && req.query.debug) {
-      res.status(200).json({ lastDebugInfo });
-      return;
-    }
-    res.status(405).json({ error: "Method not allowed" });
-    return;
-  }
-
   if (req.method !== "POST") {
     res.status(405).json({ error: "Method not allowed" });
     return;
@@ -89,24 +75,31 @@ export default async function handler(req, res) {
 
     const data = await upstream.json();
 
-    // Save for debugging — visit /api/anthropic?debug=1 to view.
-    lastDebugInfo = {
-      upstreamStatus: upstream.status,
-      upstreamOk: upstream.ok,
-      raw: data,
-    };
-
     if (!upstream.ok) {
-      res.status(upstream.status).json({ error: "Gemini API error", detail: data });
+      res.status(200).json({
+        content: [{ type: "text", text: "[DEBUG] Gemini error: " + JSON.stringify(data) }],
+      });
       return;
     }
 
-    const text =
+    let text =
       data?.candidates?.[0]?.content?.parts?.map((p) => p.text || "").join("") || "";
+
+    if (!text) {
+      const candidate = data?.candidates?.[0];
+      text =
+        "[DEBUG] Empty response. finishReason=" +
+        (candidate?.finishReason || "none") +
+        " promptFeedback=" +
+        JSON.stringify(data?.promptFeedback || {}) +
+        " safetyRatings=" +
+        JSON.stringify(candidate?.safetyRatings || []);
+    }
 
     res.status(200).json({ content: [{ type: "text", text }] });
   } catch (err) {
-    lastDebugInfo = { crashError: err.message };
-    res.status(500).json({ error: "Upstream request failed", detail: err.message });
+    res.status(200).json({
+      content: [{ type: "text", text: "[DEBUG] Crash: " + err.message }],
+    });
   }
-}
+          }
