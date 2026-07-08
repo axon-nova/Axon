@@ -1,8 +1,10 @@
 // api/anthropic.js
 //
 // This function still lives at /api/anthropic, but now calls Google's
-// Gemini API instead of Anthropic's. This debug version shows what went
-// wrong directly in the chat reply if the response text comes back empty.
+// Gemini API instead of Anthropic's. This debug version surfaces every
+// possible failure directly in the chat reply (as visible text) instead of
+// falling back to a generic "couldn't generate a response" message, so we
+// can see exactly what's going wrong.
 
 const RATE_LIMIT_WINDOW_MS = 60 * 1000;
 const RATE_LIMIT_MAX_REQUESTS = 20;
@@ -24,6 +26,10 @@ function toGeminiContents(messages) {
   }));
 }
 
+function debugReply(res, text) {
+  res.status(200).json({ content: [{ type: "text", text }] });
+}
+
 export default async function handler(req, res) {
   if (req.method !== "POST") {
     res.status(405).json({ error: "Method not allowed" });
@@ -36,20 +42,20 @@ export default async function handler(req, res) {
     "unknown";
 
   if (isRateLimited(ip)) {
-    res.status(429).json({ error: "Too many requests. Please slow down and try again shortly." });
+    debugReply(res, "[DEBUG] Rate limited (429) - too many requests from this IP in the last minute.");
     return;
   }
 
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
-    res.status(500).json({ error: "Server is missing GEMINI_API_KEY." });
+    debugReply(res, "[DEBUG] GEMINI_API_KEY is missing on the server.");
     return;
   }
 
   try {
     const { system, messages, max_tokens } = req.body || {};
     if (!Array.isArray(messages)) {
-      res.status(400).json({ error: "Request body must include a messages array." });
+      debugReply(res, "[DEBUG] Bad request - messages was not an array. body=" + JSON.stringify(req.body));
       return;
     }
 
@@ -76,9 +82,7 @@ export default async function handler(req, res) {
     const data = await upstream.json();
 
     if (!upstream.ok) {
-      res.status(200).json({
-        content: [{ type: "text", text: "[DEBUG] Gemini error: " + JSON.stringify(data) }],
-      });
+      debugReply(res, "[DEBUG] Gemini HTTP " + upstream.status + ": " + JSON.stringify(data));
       return;
     }
 
@@ -98,8 +102,6 @@ export default async function handler(req, res) {
 
     res.status(200).json({ content: [{ type: "text", text }] });
   } catch (err) {
-    res.status(200).json({
-      content: [{ type: "text", text: "[DEBUG] Crash: " + err.message }],
-    });
+    debugReply(res, "[DEBUG] Crash: " + err.message);
   }
-          }
+}
